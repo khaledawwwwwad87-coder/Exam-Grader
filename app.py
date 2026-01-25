@@ -5,16 +5,10 @@ from PIL import Image
 import io
 import fitz  # PyMuPDF
 
-# --- إعداد الصفحة ---
+# --- Page Configuration ---
 st.set_page_config(page_title="المصحح الذكي V13", layout="wide")
 
-# جلب المفتاح
-api_key = None
-try:
-    if "GOOGLE_API_KEY" in st.secrets:
-        api_key = st.secrets["GOOGLE_API_KEY"]
-except: pass
-
+# --- UI Styling ---
 st.markdown("""
 <style>
     .stApp { direction: rtl; }
@@ -24,28 +18,29 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- القائمة الجانبية ---
+# --- Sidebar Configuration ---
 with st.sidebar:
     st.header("⚙️ الإعدادات")
-    if not api_key:
-        api_key = st.text_input("🔑 مفتاح API:", type="password")
+    
+    # User-provided API Key
+    user_api_key = st.text_input("🔑 أدخل مفتاح Gemini API الخاص بك:", type="password", help="المفتاح خاص بك ولا يتم حفظه على الخادم.")
     
     st.divider()
+    # Restricted model selection
     model_name = st.selectbox("🧠 المحرك:", ["gemini-2.5-pro", "gemini-2.5-flash"], index=0)
-    st.info("ℹ️ النظام يدعم التوليد التلقائي للنموذج عند بدء التصحيح.")
+    
+    if not user_api_key:
+        st.warning("⚠️ يرجى إدخال مفتاح API للمتابعة.")
 
-# --- دوال المعالجة ---
+# --- Processing Functions ---
 def smart_split(image, page_num):
     width, height = image.size
-    actions_log = ""
     if width > height * 1.1:
         right_half = image.crop((width // 2, 0, width, height)) 
         left_half = image.crop((0, 0, width // 2, height))     
-        actions_log = f"صفحة {page_num}: عريضة (تم قصها ✂️)"
-        return [right_half, left_half], actions_log
+        return [right_half, left_half], f"صفحة {page_num}: عريضة (تم قصها ✂️)"
     else:
-        actions_log = f"صفحة {page_num}: عادية (✅)"
-        return [image], actions_log
+        return [image], f"صفحة {page_num}: عادية (✅)"
 
 def process_file_smartly(file):
     if file is None: return [], []
@@ -69,10 +64,10 @@ def process_file_smartly(file):
         
     return final_processed_images, logs
 
-# --- الواجهة الرئيسية ---
-st.title("🛡️ المصحح الذكي (V13 - التصحيح التلقائي)")
+# --- Main Interface ---
+st.title("🛡️ المصحح الذكي (V13 - Gemini 2.5)")
 
-# --- القسم 1: المصدر ---
+# --- Section 1: Answer Key Setup ---
 st.subheader("1️⃣ إعدادات الإجابة النموذجية")
 
 grading_mode = st.radio(
@@ -82,7 +77,7 @@ grading_mode = st.radio(
 )
 
 final_model_content = []  
-q_file_uploaded = None # لتخزين ورقة الأسئلة مؤقتاً
+q_file_uploaded = None 
 
 if grading_mode == "أ- لدي ملف إجابة نموذجية جاهز":
     t_file = st.file_uploader("ارفع ملف النموذج", type=['pdf', 'png', 'jpg'])
@@ -90,116 +85,96 @@ if grading_mode == "أ- لدي ملف إجابة نموذجية جاهز":
         model_images, _ = process_file_smartly(t_file)
         if model_images:
             final_model_content = ["\n--- [صور النموذج المعتمد] ---", *model_images]
-            st.success(f"✅ تم اعتماد الملف.")
+            st.success(f"✅ تم اعتماد ملف النموذج.")
 
-else: # الخيار ب
+else: 
     q_file_uploaded = st.file_uploader("ارفع ورقة الأسئلة فقط", type=['pdf', 'png', 'jpg'])
-    
-    # تهيئة المتغير في الذاكرة
     if 'ai_generated_key' not in st.session_state:
         st.session_state.ai_generated_key = None
 
-    # زر اختياري للمعاينة (ليس إجبارياً الآن)
-    if q_file_uploaded and api_key:
-        if st.button("👁️ معاينة النموذج المولد (اختياري)"):
-            with st.spinner("جاري التوليد للمعاينة..."):
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(model_name)
-                q_imgs, _ = process_file_smartly(q_file_uploaded)
-                res = model.generate_content(["حل هذا الامتحان بدقة ليكون نموذجاً.", *q_imgs])
-                st.session_state.ai_generated_key = res.text
+    if q_file_uploaded and user_api_key:
+        if st.button("👁️ معاينة النموذج المولد"):
+            with st.spinner("جاري حل الأسئلة بواسطة الذكاء الاصطناعي..."):
+                try:
+                    genai.configure(api_key=user_api_key)
+                    model = genai.GenerativeModel(model_name)
+                    q_imgs, _ = process_file_smartly(q_file_uploaded)
+                    res = model.generate_content(["حل هذا الامتحان بدقة ليكون نموذجاً للتصحيح.", *q_imgs])
+                    st.session_state.ai_generated_key = res.text
+                except Exception as e:
+                    st.error(f"حدث خطأ: {e}")
     
     if st.session_state.ai_generated_key:
-        with st.expander("عرض النموذج"): st.markdown(st.session_state.ai_generated_key)
+        with st.expander("عرض النموذج المولد"): st.markdown(st.session_state.ai_generated_key)
         final_model_content = ["\n--- [نموذج مولد] ---", st.session_state.ai_generated_key]
 
-
-# --- القسم 2: الطلاب ---
+# --- Section 2: Student Submissions ---
 st.divider()
 st.subheader("2️⃣ ملفات الطلاب")
-student_files = st.file_uploader("رفع الإجابات", type=['pdf', 'png', 'jpg'], accept_multiple_files=True)
+student_files = st.file_uploader("رفع إجابات الطلاب", type=['pdf', 'png', 'jpg'], accept_multiple_files=True)
 
-# --- القسم 3: التشغيل ---
-if st.button("🚀 بدء التصحيح") and api_key:
+# --- Section 3: Grading Execution ---
+if st.button("🚀 بدء عملية التصحيح"):
+    if not user_api_key:
+        st.error("⚠️ يرجى إدخال مفتاح API الخاص بك في القائمة الجانبية.")
+        st.stop()
     
-    # --- المنطق الجديد: التوليد التلقائي إذا لزم الأمر ---
-    # إذا اختار (ب) ورفع أسئلة لكن النموذج فارغ (لأنه لم يضغط زر المعاينة)
-    if grading_mode == "ب- ليس لدي نموذج (توليد بالذكاء الاصطناعي)" and q_file_uploaded and not final_model_content:
-        with st.spinner("⏳ لم يتم توليد النموذج مسبقاً.. جاري حل الامتحان الآن آلياً..."):
+    if not final_model_content and q_file_uploaded:
+        # Auto-generate key if not already done
+        with st.spinner("⏳ جاري توليد نموذج الإجابة أولاً..."):
             try:
-                genai.configure(api_key=api_key)
+                genai.configure(api_key=user_api_key)
                 model = genai.GenerativeModel(model_name)
-                # إعادة قراءة الملف لأنه قد يكون أغلق
                 q_file_uploaded.seek(0)
                 q_imgs, _ = process_file_smartly(q_file_uploaded)
-                
-                prompt_gen = ["قم بحل هذا الامتحان بدقة متناهية ليكون مرجعاً للتصحيح.", *q_imgs]
-                response_gen = model.generate_content(prompt_gen)
-                
-                # حفظ النتيجة واعتمادها
-                st.session_state.ai_generated_key = response_gen.text
-                final_model_content = ["\n--- [نموذج مولد آلياً عند البدء] ---", response_gen.text]
-                st.success("تم توليد النموذج بنجاح! ننتقل لتصحيح الطلاب...")
+                res = model.generate_content(["حل هذا الامتحان بدقة.", *q_imgs])
+                final_model_content = ["\n--- [نموذج مولد] ---", res.text]
             except Exception as e:
-                st.error(f"فشل في توليد النموذج: {e}")
-                st.stop() # إيقاف البرنامج
-    
-    # --- التحقق النهائي قبل البدء ---
+                st.error(f"فشل التوليد: {e}")
+                st.stop()
+
     if not final_model_content:
-        if grading_mode == "أ- لدي ملف إجابة نموذجية جاهز":
-            st.error("⚠️ الرجاء رفع ملف النموذج في الخطوة 1.")
-        else:
-            st.error("⚠️ الرجاء رفع ورقة الأسئلة ليتمكن النظام من حلها.")
+        st.error("⚠️ يرجى توفير ملف إجابة نموذجية أو ورقة أسئلة.")
     elif not student_files:
-        st.error("⚠️ الرجاء رفع ملفات الطلاب.")
+        st.error("⚠️ يرجى رفع ملفات الطلاب.")
     else:
-        # --- عملية التصحيح ---
-        genai.configure(api_key=api_key)
+        genai.configure(api_key=user_api_key)
         model = genai.GenerativeModel(model_name)
-        
         results = []
-        bar = st.progress(0)
+        progress_bar = st.progress(0)
         
         for i, s_file in enumerate(student_files):
-            s_images, logs = process_file_smartly(s_file)
-            
+            s_images, _ = process_file_smartly(s_file)
             try:
                 prompt = [
-                    """
-                    أنت مصحح امتحانات.
-                    قارن إجابة الطالب بالنموذج المرفق (سواء كان صوراً أو نصاً).
-                    تنسيق السطر الأول: الاسم | العلامة | الملاحظة
-                    """,
-                    *final_model_content, # هنا أصبحنا نضمن وجود النموذج
-                    "\n--- [ورقة الطالب] ---",
+                    "أنت مصحح امتحانات خبير. قارن إجابة الطالب بالنموذج. التنسيق: الاسم | العلامة | الملاحظة",
+                    *final_model_content,
+                    "\n--- [إجابة الطالب] ---",
                     *s_images
                 ]
-                
                 response = model.generate_content(prompt)
-                text = response.text
+                raw_text = response.text
                 
+                # Simple parsing logic
                 try:
-                    line1 = text.split('\n')[0].split('|')
-                    name, grade = line1[0].strip(), line1[1].strip()
-                    note = line1[2].strip() if len(line1) > 2 else ""
+                    parts = raw_text.split('\n')[0].split('|')
+                    name = parts[0].strip()
+                    grade = parts[1].strip()
                 except:
-                    name, grade, note = "تحقق", "غير محدد", "خطأ تنسيق"
+                    name, grade = "غير معروف", "تحتاج مراجعة"
                 
-                results.append({"الملف": s_file.name, "الطالب": name, "الدرجة": grade, "التفاصيل": text})
-                
+                results.append({"الملف": s_file.name, "الطالب": name, "الدرجة": grade, "التفاصيل": raw_text})
             except Exception as e:
                 results.append({"الملف": s_file.name, "الطالب": "خطأ", "الدرجة": "0", "التفاصيل": str(e)})
             
-            bar.progress((i + 1) / len(student_files))
+            progress_bar.progress((i + 1) / len(student_files))
         
-        st.success("تم الانتهاء!")
+        st.success("✅ اكتمل التصحيح!")
         df = pd.DataFrame(results)
         st.dataframe(df)
         
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer: df.to_excel(writer, index=False)
-        st.download_button("📥 Excel", buffer.getvalue(), "Grades_V13.xlsx")
-        
-        st.divider()
-        for _, row in df.iterrows():
-            with st.expander(f"{row['الطالب']}"): st.markdown(row['التفاصيل'])
+        # Download results
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        st.download_button("📥 تحميل النتائج (Excel)", output.getvalue(), "Grades_V13.xlsx")
